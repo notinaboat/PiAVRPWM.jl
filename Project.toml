@@ -1,0 +1,4 @@
+name = "PiAVRPWM"
+uuid = "8710fe4f-12e7-49c2-994a-8d0744b96e20"
+authors = ["notinaboat <notinaboat@icloud.com>"]
+version = "0.1.0"
