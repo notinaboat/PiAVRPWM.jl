@@ -2,3 +2,9 @@ name = "PiAVRPWM"
 uuid = "8710fe4f-12e7-49c2-994a-8d0744b96e20"
 authors = ["notinaboat <notinaboat@icloud.com>"]
 version = "0.1.0"
+
+[deps]
+BBSPI = "d9c4ebee-6e29-4c04-a492-1c21dbbc648c"
+PiAVR = "f82d0a5e-37c7-4c6d-97a6-675ba479f9be"
+PiGPIOC = "30a511cb-78f8-4457-8440-9b2c99933694"
+PiGPIOMEM = "1cdbf0ad-f496-4de0-97e4-602941adc73e"
