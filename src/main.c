@@ -1,6 +1,8 @@
 /*
 
-17-channel soft-PWM.
+Multi-channel 0-5V soft PWM (PDM) Output Module
+
+main.c for ATMega328p.
 
 */
 
@@ -14,6 +16,7 @@
     #include "avr_util.h"
 #else
     #include <stdio.h>
+    #include <stdint.h>
     #include <stdlib.h>
     #include <assert.h>
 
@@ -23,8 +26,11 @@
     #define printn(m, n) ({})
 
     void print_channel(uint8_t channel);
+
+    #define DO_PWM_CHECK
 #endif
 
+#define PWM_BITS 10
 #define PWM_MAX 512
 #define PWM_BUF_LEN (PWM_MAX / 8)
 
@@ -41,9 +47,6 @@
 #include "pwm_pins.h"
 
 
-// PWM output level setting.
-static int16_t pwm_level[PWM_PIN_COUNT];
-
 // PWM bit patterns.
 static uint8_t pwm_buf[PWM_PIN_COUNT][PWM_BUF_LEN];
 
@@ -51,16 +54,15 @@ static uint8_t pwm_buf[PWM_PIN_COUNT][PWM_BUF_LEN];
 static uint8_t pwm_i;
 static uint8_t pwm_mask;
 
-// Configure GPIO pins for output and zero bit patterns.
+static void pwm_set(uint8_t channel, uint16_t target);
+
+// Configure GPIO pins for output and set bit patterns to zero.
 static void pwm_init()
 {
     for (uint8_t i = 0 ; i < PWM_PIN_COUNT ; i++) {
         pin_enable_output(pwm_pins[i]);
         pin_set(pwm_pins[i], 0);
-        pwm_level[i] = 0;
-        for (uint8_t j = 0 ; j < PWM_BUF_LEN ; j++) {
-            pwm_buf[i][j] = 0;
-        }
+        pwm_set(i, PWM_MAX/2);
     }
     pwm_i = 0;
     pwm_mask = 1;
@@ -99,51 +101,23 @@ static void pwm_output()
 
 
 // Set bit `i` in a `channel`'s PWM buffer to `value` (0 or 1).
-// Return `1` if the bit was changed from `0` to `1`.
-// Return `-1` if the bit was changed from `1` to `0`.
-// Return `0` if the bit was unchanged.
-static int8_t pwm_set_bit(uint8_t channel, uint16_t i, uint8_t value)
+static void pwm_set_bit(uint8_t channel, uint16_t i, uint8_t value)
 {
     assert(channel < PWM_PIN_COUNT);
     assert(i < PWM_MAX);
-    int8_t result = 0;
     uint8_t mask = 1 << (i % 8);
     i >>= 3;
     uint8_t byte = pwm_buf[channel][i];
     if (value) {
-        if ((byte & mask) == 0) {
-            byte |= mask;
-            result = 1;
-        }
+        byte |= mask;
     } else {
-        if (byte & mask) {
-            byte &= ~mask;
-            result = -1;
-        }
+        byte &= ~mask;
     }
     pwm_buf[channel][i] = byte;
-    return result;
 }
 
 
-// Set a random bit in the PWM pattern buffer for `channel`.
-static void pwm_set_random_bit(uint8_t channel)
-{
-    assert(channel < PWM_PIN_COUNT);
-
-    uint32_t i = rand() % PWM_MAX;
-    for (;;) {
-        if (pwm_set_bit(channel, i, 1)) {
-            return;
-        }
-        i++;
-        if (i == PWM_MAX) {
-            i = 0;
-        }
-    }
-}
-
-
+#ifdef DO_PWM_CHECK
 // Value at index `i` is the number of bits set in binary representation of `i`.
 const int8_t _bit_count[] = {0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4};
 
@@ -153,6 +127,7 @@ static int8_t bit_count(uint8_t v)
     return _bit_count[v & 0b1111]
          + _bit_count[v >> 4];
 }
+#endif
 
 
 // Set PWM `channel` to `target` output value.
@@ -161,41 +136,29 @@ static void pwm_set(uint8_t channel, uint16_t target)
     assert(target <= PWM_MAX);
     assert(channel < PWM_PIN_COUNT);
 
-    // Find a ratio `a:b` that approximates `target:PWM_MAX`...
-    uint16_t a = target;
-    uint16_t b = PWM_MAX;
-    int16_t err = 0;
-    while(a > 1) {
-        uint16_t _a = a / 2;
-        uint16_t _b = b / 2;
-        err = target - _a * (PWM_MAX / _b);
-        if (err > (PWM_MAX / _b)) {
-            break;
+    // Pulse Density Modulation
+    // https://en.wikipedia.org/wiki/Pulse-density_modulation
+    int16_t sum = 0;
+    for (uint16_t i = 0 ; i < PWM_MAX ; i++) {
+        sum += target;
+        if (sum < PWM_MAX) {
+            pwm_set_bit(channel, i, 0);
+        } else {
+            pwm_set_bit(channel, i, 1);
+            sum -= PWM_MAX;
         }
-        a = _a;
-        b = _b;
-    }
-    assert(err >= 0);
-
-    // Create a bit pattern using the ratio `a:b`...
-    for (uint16_t i = 0 ; i < PWM_MAX ; i ++) {
-        pwm_set_bit(channel, i, (i % b) < a);
     }
 
-    // Fill in the remaining bits randomly...
-    while (err--) {
-        pwm_set_random_bit(channel);
-    }
+//    printn("pwm_set", (channel << PWM_BITS) | target);
 
+#ifdef DO_PWM_CHECK
     // Check that the target was reached.
     uint16_t count = 0;
     for (uint8_t i = 0 ; i < PWM_BUF_LEN ; i++) {
         count += bit_count(pwm_buf[channel][i]);
     }
     assert(count == target);
-
-    pwm_level[channel] = target;
-    printn("err: ", target - count);
+#endif
 
     return;
 }
@@ -211,7 +174,7 @@ ISR(TIMER1_COMPA_vect)
 int main(void) __attribute((noreturn));
 int main()
 {
-    // Configure Moinitor Serial Data TX pin...
+    // Configure Monitor Serial Data TX pin...
     pin_enable_output(MONITOR);
     pin_set_high(MONITOR);
 
@@ -222,12 +185,11 @@ int main()
 
     pwm_init();
 
-    // CTC mode, 16MHz / 8 = 2000kHz...
+    // Configure ISR(TIMER1_COMPA_vect)
+    // CTC mode, 16MHz / 8 = 2000kHz
     TCCR1A = 0;
     TCCR1B = (1 << WGM12) | (1 << CS11) | (0 << CS10);
-     
-    // Enable TIMER1_COMPA ISR...
-    OCR1A = 200;
+    OCR1A = 40; // 2000 / 40 = 50kHz
     TIFR1 |= (1 << OCF1A);
     TIMSK1 |= (1 << OCIE1A);
 
@@ -237,18 +199,15 @@ int main()
     uint8_t channel = 0;
     uint16_t target = 0;
 
-    println("PiAVRPWM Started.");
+    //println("PiAVRPWM Started.");
 
     for(;;) {
         uint8_t byte = bbspi_rx();
-        uint8_t flag = (byte & 0b11000000) >> 6;
-        byte &= 0b00111111;
-        if (flag == 0) {
-            channel = byte;
-        } else if (flag == 1) {
-            target = (uint16_t)byte << 6;
-        } else if (flag == 2) {
-            target |= byte;
+        if ((byte & 0b10000000) == 0) {
+            channel = byte >> 3;
+            target = (uint16_t)(byte & 0b00000111) << 7;
+        } else {
+            target |= (byte & 0b01111111);
             pwm_set(channel, target);
         }
     }
